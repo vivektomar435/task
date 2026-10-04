@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Team Daily Tasks</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 0 auto; padding: 16px; background: #f6f7f9; color: #222; }
+  h1 { font-size: 1.3rem; }
+  .card { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-bottom: 14px; }
+  .card h2 { font-size: 1rem; margin: 0 0 8px; }
+  .task { padding: 6px 0; border-top: 1px solid #eee; }
+  .task.done .text { text-decoration: line-through; color: #888; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  input[type=text] { flex: 1; padding: 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 1rem; }
+  button { padding: 8px 12px; border: 1px solid #ccc; background: #fff; border-radius: 6px; cursor: pointer; font-size: 1rem; }
+  .rx { margin: 4px 0 0 26px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .rx button { padding: 2px 8px; font-size: .9rem; }
+  .rx button.mine { background: #e3f0ff; border-color: #7aa7e0; }
+  #toasts { position: fixed; top: 10px; right: 10px; left: 10px; max-width: 360px; margin-left: auto; z-index: 10; }
+  .toast { background: #1d7a46; color: #fff; padding: 10px 14px; border-radius: 6px; margin-bottom: 8px; }
+  .muted { color: #777; font-size: .85rem; }
+</style>
+</head>
+<body>
+<div id="toasts"></div>
+<h1>Team Daily Tasks</h1>
+<div class="muted">Hi, <b id="me"></b> · <a href="#" id="change">change name</a> · <span id="today"></span></div>
+
+<div class="card" style="margin-top:12px">
+  <div class="row">
+    <input type="text" id="newTask" placeholder="What will you finish today?">
+    <button id="add">Add</button>
+  </div>
+</div>
+<div id="board"></div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import { getFirestore, collection, addDoc, doc, updateDoc, query, where, onSnapshot,
+         serverTimestamp, arrayUnion, arrayRemove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+// 1) PASTE YOUR FIREBASE CONFIG HERE (Firebase console > Project settings > Your apps > Web)
+  const firebaseConfig = {
+    apiKey: "AIzaSyDgvElgKVPGRCF1ITeClrA2fC8Tu5Ih8RI",
+    authDomain: "task-c8a47.firebaseapp.com",
+    projectId: "task-c8a47",
+    storageBucket: "task-c8a47.firebasestorage.app",
+    messagingSenderId: "897712334978",
+    appId: "1:897712334978:web:10aaba0220caf4ba8d6c9b",
+    measurementId: "G-M6MX61G6WY"
+  };
+
+const EMOJIS = ["👍", "🔥", "👏", "❤️"];
+const db = getFirestore(initializeApp(firebaseConfig));
+const tasksRef = collection(db, "tasks");
+
+// ---- name ----
+let me = localStorage.getItem("name");
+while (!me || !me.trim()) me = prompt("Enter your name:");
+me = me.trim();
+localStorage.setItem("name", me);
+document.getElementById("me").textContent = me;
+document.getElementById("change").onclick = e => { e.preventDefault(); localStorage.removeItem("name"); location.reload(); };
+
+// ---- today's date (local) ----
+const d = new Date();
+const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+document.getElementById("today").textContent = today;
+
+if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
+
+// ---- add task ----
+const input = document.getElementById("newTask");
+async function addTask() {
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  await addDoc(tasksRef, { user: me, text, date: today, done: false, reactions: {}, createdAt: serverTimestamp() });
+}
+document.getElementById("add").onclick = addTask;
+input.addEventListener("keydown", e => { if (e.key === "Enter") addTask(); });
+
+// ---- toast / notification ----
+function notify(msg) {
+  const t = document.createElement("div");
+  t.className = "toast"; t.textContent = msg;
+  document.getElementById("toasts").appendChild(t);
+  setTimeout(() => t.remove(), 6000);
+  if ("Notification" in window && Notification.permission === "granted" && document.hidden) new Notification(msg);
+}
+
+// ---- live board ----
+const board = document.getElementById("board");
+let firstLoad = true;
+onSnapshot(query(tasksRef, where("date", "==", today)), snap => {
+  if (!firstLoad) {
+    snap.docChanges().forEach(c => {
+      if (c.type === "modified" && c.doc.data().done && c.doc.data().user !== me && !c.doc.metadata.hasPendingWrites)
+        notify(`${c.doc.data().user} completed: ${c.doc.data().text} ✅`);
+    });
+  }
+  firstLoad = false;
+
+  const byUser = {};
+  snap.docs.forEach(s => { const t = { id: s.id, ...s.data() }; (byUser[t.user] ||= []).push(t); });
+  board.innerHTML = "";
+  Object.keys(byUser).sort().forEach(user => {
+    const card = document.createElement("div"); card.className = "card";
+    const done = byUser[user].filter(t => t.done).length;
+    card.innerHTML = `<h2></h2>`;
+    card.querySelector("h2").textContent = `${user} (${done}/${byUser[user].length})`;
+    byUser[user].sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0)).forEach(t => {
+      const el = document.createElement("div");
+      el.className = "task" + (t.done ? " done" : "");
+      const row = document.createElement("div"); row.className = "row";
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.checked = t.done; cb.disabled = t.user !== me;
+      cb.onchange = () => updateDoc(doc(db, "tasks", t.id), { done: cb.checked });
+      const span = document.createElement("span"); span.className = "text"; span.textContent = t.text;
+      row.append(cb, span); el.appendChild(row);
+
+      const rx = document.createElement("div"); rx.className = "rx";
+      EMOJIS.forEach(e => {
+        const who = t.reactions?.[e] || [];
+        const b = document.createElement("button");
+        b.textContent = who.length ? `${e} ${who.length}` : e;
+        b.title = who.join(", ");
+        if (who.includes(me)) b.className = "mine";
+        b.onclick = () => updateDoc(doc(db, "tasks", t.id),
+          { [`reactions.${e}`]: who.includes(me) ? arrayRemove(me) : arrayUnion(me) });
+        rx.appendChild(b);
+      });
+      el.appendChild(rx);
+      card.appendChild(el);
+    });
+    board.appendChild(card);
+  });
+  if (!snap.size) board.innerHTML = '<p class="muted">No tasks yet today. Add the first one.</p>';
+});
+</script>
+</body>
+</html>
